@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Chatbot UI</title>
+        <link rel="stylesheet" href="/static/css/styles.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+<body>
+    <div class="chatbot-container">
+        <div class="chatbot-header">
+            Chatbot
+        </div>
+
+        <div class="chatbot-body" id="chatbot-body">
+            <!-- Messages will appear here -->
+        </div>
+
+        <div class="chatbot-footer">
+            <button class="upload-btn" id="upload-btn" title="Upload Image">
+                <i class="fas fa-upload"></i>
+            </button>
+            <div class="input-container">
+                <textarea id="user-input" placeholder="Type a message..." autofocus></textarea>
+                <button class="send-btn" id="send-btn">Send</button>
+            </div>
+            <input type="file" id="file-input" accept="image/*">
+        </div>
+
+        <button class="drop-down-button" id="drop-down-button">&#9660;</button>
+    </div>
+
+    <script src="/static/js/script.js"></script>
+</body>
+</html>
