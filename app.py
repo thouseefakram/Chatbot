@@ -19,6 +19,8 @@ from PyPDF2 import PdfReader
 import re
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+import whisper
+import tempfile
 
 # Load environment variables
 load_dotenv()
@@ -30,6 +32,8 @@ UPLOAD_FOLDER = "uploads"
 VECTOR_STORE_PATH = "vector_store"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
+
+whisper_model = whisper.load_model("base")
 
 # Initialize embeddings
 embeddings = HuggingFaceBgeEmbeddings(
@@ -154,6 +158,23 @@ def update_vector_store(text, filename):
     # Save the updated vector store
     vector_store.save_local(VECTOR_STORE_PATH)
 
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    try:
+        # Save audio to temporary file
+        with tempfile.NamedTemporaryFile(delete=True, suffix=".webm") as tmp:
+            shutil.copyfileobj(audio.file, tmp)
+            tmp.flush()
+            
+            # Transcribe using Whisper 
+            result = whisper_model.transcribe(tmp.name)
+            
+            return {"text": result["text"]}
+            
+    except Exception as e:
+        raise HTTPException(500, f"Audio transcription failed: {str(e)}")
+    
+
 @app.post("/upload-file")
 async def upload_file(file: UploadFile = File(...)):
     try:
@@ -272,7 +293,7 @@ async def chat(request: Request):
         messages = [
             {
                 "role": "system",
-                "content": "You are an AI assistant. just try to answer in short"
+                "content": "You are an AI assistant. just try to answer like human"
             },
             *[
                 {"role": "user" if msg.type == "human" else "assistant", "content": msg.content}
