@@ -56,6 +56,9 @@ try:
 except:
     vector_store = None
 
+# Document memory to store last processed text
+document_memory = {}
+
 # Serve static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -213,6 +216,16 @@ async def upload_file(file: UploadFile = File(...)):
                 update_vector_store(extracted_text, filename)
             elif file_type == "image":
                 extracted_text = extract_text_from_image(file_path)
+                update_vector_store(extracted_text, filename)
+            
+            # Store the extracted text in document memory
+            document_memory[filename] = {
+                "type": file_type,
+                "text": extracted_text,
+                "size": file_size,
+                "timestamp": datetime.now().isoformat()
+            }
+            
         except Exception as e:
             os.remove(file_path)
             raise HTTPException(500, f"Error processing file: {str(e)}")
@@ -252,27 +265,60 @@ async def chat(request: Request):
         extracted_texts = []
         
         for file_info in chat_request.files:
-            file_path = os.path.join(UPLOAD_FOLDER, file_info.filename)
-            if os.path.exists(file_path):
-                try:
-                    if file_info.type == "pdf":
-                        text = extract_text_from_pdf(file_path)
-                        if text:
-                            # Store full text for extraction
-                            extracted_texts.append(text)
-                            # Create summary for context
-                            summary = f"PDF '{file_info.filename}' ({len(text.split())} words). "
-                            summary += "Use the 'extract' action to get full text."
-                            file_contexts.append(summary)
-                    elif file_info.type == "image":
-                        text = extract_text_from_image(file_path)
-                        if text:
-                            extracted_texts.append(text)
-                            file_contexts.append(f"Image content: {text[:1000]}...")
-                except Exception as e:
-                    print(f"Error processing file: {str(e)}")
-                    file_contexts.append(f"Error processing {file_info.type} file")
+            # Check if we have the file in memory first
+            if file_info.filename in document_memory:
+                file_data = document_memory[file_info.filename]
+                extracted_text = file_data["text"]
+                extracted_texts.append(extracted_text)
+                
+                if file_data["type"] == "pdf":
+                    summary = f"PDF '{file_info.filename}' ({len(extracted_text.split())} words). "
+                    summary += "Use the 'extract' action to get full text."
+                    file_contexts.append(summary)
+                elif file_data["type"] == "image":
+                    file_contexts.append(f"Image content: {extracted_text[:1000]}...")
+            else:
+                # Fall back to file processing if not in memory
+                file_path = os.path.join(UPLOAD_FOLDER, file_info.filename)
+                if os.path.exists(file_path):
+                    try:
+                        if file_info.type == "pdf":
+                            text = extract_text_from_pdf(file_path)
+                            if text:
+                                extracted_texts.append(text)
+                                summary = f"PDF '{file_info.filename}' ({len(text.split())} words). "
+                                summary += "Use the 'extract' action to get full text."
+                                file_contexts.append(summary)
+                                # Store in memory for future reference
+                                document_memory[file_info.filename] = {
+                                    "type": "pdf",
+                                    "text": text,
+                                    "size": os.path.getsize(file_path),
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                        elif file_info.type == "image":
+                            text = extract_text_from_image(file_path)
+                            if text:
+                                extracted_texts.append(text)
+                                file_contexts.append(f"Image content: {text[:1000]}...")
+                                # Store in memory for future reference
+                                document_memory[file_info.filename] = {
+                                    "type": "image",
+                                    "text": text,
+                                    "size": os.path.getsize(file_path),
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                    except Exception as e:
+                        print(f"Error processing file: {str(e)}")
+                        file_contexts.append(f"Error processing {file_info.type} file")
 
+        # Handle extraction action
+        if chat_request.action == "extract" and extracted_texts:
+            return {
+                "response": "Here is the extracted text from the document(s):",
+                "extracted_text": "\n\n---\n\n".join(extracted_texts)
+            }
+        
         # Build final message with context
         final_message = chat_request.message
         if file_contexts:
@@ -322,6 +368,8 @@ async def chat(request: Request):
 async def clear_memory():
     try:
         memory.clear()
+        # Clear document memory
+        document_memory.clear()
         # Clear vector store
         global vector_store
         vector_store = None
@@ -340,6 +388,23 @@ async def clear_memory():
         return {"status": "Memory and files cleared successfully"}
     except Exception as e:
         raise HTTPException(500, f"Error clearing memory: {str(e)}")
+
+# Get document memory info
+@app.get("/document-memory")
+async def get_document_memory():
+    return {
+        "count": len(document_memory),
+        "documents": [
+            {
+                "filename": filename,
+                "type": data["type"],
+                "size": data["size"],
+                "timestamp": data["timestamp"],
+                "text_length": len(data["text"])
+            }
+            for filename, data in document_memory.items()
+        ]
+    }
 
 # Serve frontend
 @app.get("/")
