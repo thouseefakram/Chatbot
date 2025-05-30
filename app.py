@@ -13,7 +13,7 @@ import pytesseract
 from PIL import Image
 from datetime import datetime
 import uuid
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from PyPDF2 import PdfReader
 import re
@@ -36,7 +36,7 @@ os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
 whisper_model = whisper.load_model("base")
 
 # Initialize embeddings
-embeddings = HuggingFaceBgeEmbeddings(
+embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
     encode_kwargs={'normalize_embeddings': True}
 )
