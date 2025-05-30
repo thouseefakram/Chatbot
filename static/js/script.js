@@ -242,7 +242,7 @@ async function handleFileUpload(file, isPdf = false) {
     try {
         // Disable send button during upload
         sendBtn.disabled = true;
-        sendBtn.classList.add('uploading'); // Add this line
+        sendBtn.classList.add('uploading');
         
         // Show loading state
         if (isPdf) {
@@ -303,6 +303,7 @@ async function handleFileUpload(file, isPdf = false) {
         }
     }
 }
+
 // Send message to server
 async function sendMessage() {
     // Prevent sending if currently uploading files
@@ -454,8 +455,8 @@ sendBtn.addEventListener('click', () => {
 userInput.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        // Only send if send button is not disabled
-        if (!sendBtn.disabled) {
+        // Only send if not currently generating and send button is not disabled
+        if (!isGenerating && !sendBtn.disabled) {
             sendMessage();
         }
     }
