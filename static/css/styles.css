@@ -486,4 +486,13 @@ em {
     margin: 0;
 }
 
-/* Keep the existing styles and add these modifications */
+/* Add this to your existing CSS */
+.upload-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.upload-btn .fa-spinner {
+    margin: 0;
+}

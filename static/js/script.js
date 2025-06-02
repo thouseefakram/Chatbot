@@ -219,6 +219,9 @@ function showFilePreview(file, url, type) {
         e.stopPropagation();
         previewContainer.remove();
         currentFiles = currentFiles.filter(f => f.id !== file.id);
+        // Re-enable upload button when file is removed
+        uploadBtn.disabled = false;
+        uploadBtn.classList.remove('disabled');
     };
     
     previewContainer.appendChild(removeBtn);
@@ -226,6 +229,7 @@ function showFilePreview(file, url, type) {
     const previewsContainer = document.querySelector('.previews-container') || createPreviewsContainer();
     previewsContainer.appendChild(previewContainer);
 }
+
 
 function createPreviewsContainer() {
     const container = document.createElement('div');
@@ -237,14 +241,8 @@ function createPreviewsContainer() {
 
 // Handle file upload
 async function handleFileUpload(file, isPdf = false) {
-    if (isUploading) {
-        appendMessage('bot', 'Please wait until the current upload finishes');
-        return;
-    }
-    
-    if (currentFiles.length > 0) {
-        appendMessage('bot', 'Please remove the current file before uploading a new one');
-        return;
+    if (isUploading || currentFiles.length > 0) {
+        return; // Simply return without doing anything
     }
 
     isUploading = true;
@@ -255,6 +253,7 @@ async function handleFileUpload(file, isPdf = false) {
         // Show loading state on the upload button
         uploadBtnIcon.className = 'fas fa-spinner fa-spin';
         uploadBtn.disabled = true;
+        uploadBtn.classList.add('disabled');
         
         const formData = new FormData();
         formData.append('file', file);
@@ -291,7 +290,8 @@ async function handleFileUpload(file, isPdf = false) {
     } finally {
         // Restore upload button state
         uploadBtnIcon.className = originalClass;
-        uploadBtn.disabled = false;
+        uploadBtn.disabled = currentFiles.length > 0; // Keep disabled if we have a file
+        uploadBtn.classList.toggle('disabled', currentFiles.length > 0);
         isUploading = false;
         fileInput.value = '';
     }
@@ -459,7 +459,7 @@ userInput.addEventListener('keydown', function (e) {
 });
 
 uploadBtn.addEventListener('click', () => {
-    if (!isUploading) {
+    if (!isUploading && currentFiles.length === 0) {
         fileInput.click();
     }
 });
