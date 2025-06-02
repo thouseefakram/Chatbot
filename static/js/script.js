@@ -13,6 +13,7 @@ let isGenerating = false;
 let abortController = null;
 let isUserScrolledUp = false;
 let currentFiles = [];
+let isUploading = false;
 
 // Check if user is at bottom of chat
 function isUserAtBottom() {
@@ -236,26 +237,25 @@ function createPreviewsContainer() {
 
 // Handle file upload
 async function handleFileUpload(file, isPdf = false) {
-    const loadingElement = isPdf ? pdfUploadBtn : uploadBtn;
-    const originalContent = loadingElement.innerHTML;
+    if (isUploading) {
+        appendMessage('bot', 'Please wait until the current upload finishes');
+        return;
+    }
+    
+    if (currentFiles.length > 0) {
+        appendMessage('bot', 'Please remove the current file before uploading a new one');
+        return;
+    }
+
+    isUploading = true;
+    const uploadBtnIcon = uploadBtn.querySelector('i');
+    const originalClass = uploadBtnIcon.className;
     
     try {
-        // Disable send button during upload
-        sendBtn.disabled = true;
-        sendBtn.classList.add('uploading');
+        // Show loading state on the upload button
+        uploadBtnIcon.className = 'fas fa-spinner fa-spin';
+        uploadBtn.disabled = true;
         
-        // Show loading state
-        if (isPdf) {
-            loadingElement.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-        } else {
-            const icon = loadingElement.querySelector('i');
-            icon.style.display = 'none';
-            const spinner = document.createElement('div');
-            spinner.className = 'upload-spinner';
-            loadingElement.appendChild(spinner);
-            spinner.style.display = 'block';
-        }
-
         const formData = new FormData();
         formData.append('file', file);
 
@@ -289,25 +289,21 @@ async function handleFileUpload(file, isPdf = false) {
         appendMessage('bot', `Error: ${error.message}`);
         console.error('Upload error:', error);
     } finally {
-        // Re-enable send button
-        sendBtn.disabled = false;
-        sendBtn.classList.remove('uploading');
-        
-        if (isPdf) {
-            loadingElement.innerHTML = originalContent;
-        } else {
-            const spinner = loadingElement.querySelector('.upload-spinner');
-            if (spinner) spinner.remove();
-            const icon = loadingElement.querySelector('i');
-            if (icon) icon.style.display = 'block';
-        }
+        // Restore upload button state
+        uploadBtnIcon.className = originalClass;
+        uploadBtn.disabled = false;
+        isUploading = false;
+        fileInput.value = '';
     }
 }
 
 // Send message to server
 async function sendMessage() {
     // Prevent sending if currently uploading files
-    if (sendBtn.disabled) return;
+    if (isUploading) {
+        appendMessage('bot', 'Please wait until file upload completes');
+        return;
+    }
 
     const message = userInput.value.trim();
     if (!message && currentFiles.length === 0) return;
@@ -456,14 +452,16 @@ userInput.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         // Only send if not currently generating and send button is not disabled
-        if (!isGenerating && !sendBtn.disabled) {
+        if (!isGenerating && !isUploading) {
             sendMessage();
         }
     }
 });
 
 uploadBtn.addEventListener('click', () => {
-    fileInput.click();
+    if (!isUploading) {
+        fileInput.click();
+    }
 });
 
 fileInput.addEventListener('change', (e) => {
@@ -471,11 +469,12 @@ fileInput.addEventListener('change', (e) => {
     if (file) {
         handleFileUpload(file);
     }
-    e.target.value = '';
 });
 
 pdfUploadBtn.addEventListener('click', () => {
-    pdfInput.click();
+    if (!isUploading) {
+        pdfInput.click();
+    }
 });
 
 pdfInput.addEventListener('change', (e) => {
@@ -483,5 +482,4 @@ pdfInput.addEventListener('change', (e) => {
     if (file) {
         handleFileUpload(file, true);
     }
-    e.target.value = '';
 });

@@ -470,3 +470,20 @@ em {
 .send-btn {
     right: 20px;
 }
+
+/* Add these styles to your existing CSS */
+
+.upload-btn {
+    position: relative;
+}
+
+.upload-btn.disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.upload-btn .fa-spinner {
+    margin: 0;
+}
+
+/* Keep the existing styles and add these modifications */

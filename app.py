@@ -339,7 +339,7 @@ async def chat(request: Request):
         messages = [
             {
                 "role": "system",
-                "content": "You are an AI assistant. just try to answer like human"
+                "content": "You are an AI assistant.Answer like human and in short answer"
             },
             *[
                 {"role": "user" if msg.type == "human" else "assistant", "content": msg.content}
@@ -359,7 +359,7 @@ async def chat(request: Request):
         )
         
         return {"response": ai_response}
-        
+    
     except Exception as e:
         raise HTTPException(500, f"Error processing chat request: {str(e)}")
 
