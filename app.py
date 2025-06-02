@@ -312,12 +312,6 @@ async def chat(request: Request):
                         print(f"Error processing file: {str(e)}")
                         file_contexts.append(f"Error processing {file_info.type} file")
 
-        # Handle extraction action
-        if chat_request.action == "extract" and extracted_texts:
-            return {
-                "response": "Here is the extracted text from the document(s):",
-                "extracted_text": "\n\n---\n\n".join(extracted_texts)
-            }
         
         # Build final message with context
         final_message = chat_request.message
