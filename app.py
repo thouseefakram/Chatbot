@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationSummaryBufferMemory
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 import os
@@ -13,13 +13,15 @@ import pytesseract
 from PIL import Image
 from datetime import datetime
 import uuid
-from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from PyPDF2 import PdfReader
 import re
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 import whisper
+# from tiktoken import get_encoding
 import tempfile
 
 # Load environment variables
@@ -34,18 +36,18 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
 
 whisper_model = whisper.load_model("base")
-
+# tokenizer = get_encoding("cl100k_base")
 # Initialize embeddings
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    encode_kwargs={'normalize_embeddings': True}
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/embedding-001",
+    google_api_key=os.environ["GOOGLE_API_KEY"]
 )
 
 # Initialize text splitter
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1500,
     chunk_overlap=200,
-    length_function=len,
+    # length_function=lambda text: len(tokenizer.encode(text)),
     add_start_index=True,
 )
 
@@ -71,15 +73,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize LLM client
+# Initialize LLM client 
 client = ChatGroq(
     model_name="llama3-70b-8192",
     groq_api_key=os.environ["GROQ_API_KEY"],
     temperature=0.7
 )
 
-# Initialize conversation memory
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+# Initialize conversation memory with summary capability
+memory = ConversationSummaryBufferMemory(
+    llm=client,
+    memory_key="chat_history",
+    max_token_limit=2000,  # Will summarize when this limit is reached
+    return_messages=True
+)
 
 # Request models
 class FileInfo(BaseModel):
@@ -138,6 +145,25 @@ def extract_text_from_image(image_path):
     except Exception as e:
         raise Exception(f"OCR processing failed: {str(e)}")
 
+def update_document_memory(filename, content, file_type, file_size):
+    """Update document memory with summarized content"""
+    if len(content) > 2000:
+        summary = client.invoke([
+            {"role": "system", "content": "Summarize this document content concisely"},
+            {"role": "user", "content": f"Summarize this document while preserving key information:\n{content[:5000]}"}
+        ]).content
+    else:
+        summary = content
+    
+    document_memory[filename] = {
+        "type": file_type,
+        "text": content,
+        "summary": summary,
+        "size": file_size,
+        "timestamp": datetime.now().isoformat()
+    }
+    return summary
+
 def update_vector_store(text, filename):
     global vector_store
     if not text:
@@ -176,7 +202,6 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             
     except Exception as e:
         raise HTTPException(500, f"Audio transcription failed: {str(e)}")
-    
 
 @app.post("/upload-file")
 async def upload_file(file: UploadFile = File(...)):
@@ -218,13 +243,8 @@ async def upload_file(file: UploadFile = File(...)):
                 extracted_text = extract_text_from_image(file_path)
                 update_vector_store(extracted_text, filename)
             
-            # Store the extracted text in document memory
-            document_memory[filename] = {
-                "type": file_type,
-                "text": extracted_text,
-                "size": file_size,
-                "timestamp": datetime.now().isoformat()
-            }
+            # Store the extracted text in document memory with summary
+            doc_summary = update_document_memory(filename, extracted_text, file_type, file_size)
             
         except Exception as e:
             os.remove(file_path)
@@ -234,7 +254,7 @@ async def upload_file(file: UploadFile = File(...)):
             "status": "success",
             "file_type": file_type,
             "filename": filename,
-            "preview": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text,
+            "preview": doc_summary[:500] + "..." if len(doc_summary) > 500 else doc_summary,
             "file_url": f"/uploads/{filename}",
             "size": file_size
         })
@@ -254,6 +274,12 @@ async def get_uploaded_file(filename: str):
         return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="File not found")
 
+def get_recent_chat_history(count=3):
+    """Get recent chat history (last 'count' exchanges)"""
+    history = memory.load_memory_variables({})["chat_history"]
+    # Each exchange is a pair of human and AI messages
+    return history[-(count*2):] if len(history) > (count*2) else history
+
 @app.post("/chat")
 async def chat(request: Request):
     try:
@@ -265,18 +291,16 @@ async def chat(request: Request):
         extracted_texts = []
         
         for file_info in chat_request.files:
-            # Check if we have the file in memory first
             if file_info.filename in document_memory:
                 file_data = document_memory[file_info.filename]
-                extracted_text = file_data["text"]
-                extracted_texts.append(extracted_text)
+                # Use summary for context, full text for analysis
+                context_text = file_data["summary"] if chat_request.action != "extract" else file_data["text"]
+                extracted_texts.append(file_data["text"])
                 
                 if file_data["type"] == "pdf":
-                    summary = f"PDF '{file_info.filename}' ({len(extracted_text.split())} words). "
-                    summary += "Use the 'extract' action to get full text."
-                    file_contexts.append(summary)
+                    file_contexts.append(f"PDF '{file_info.filename}' summary: {context_text[:1000]}")
                 elif file_data["type"] == "image":
-                    file_contexts.append(f"Image content: {extracted_text[:1000]}...")
+                    file_contexts.append(f"Image content: {context_text[:1000]}")
             else:
                 # Fall back to file processing if not in memory
                 file_path = os.path.join(UPLOAD_FOLDER, file_info.filename)
@@ -286,33 +310,18 @@ async def chat(request: Request):
                             text = extract_text_from_pdf(file_path)
                             if text:
                                 extracted_texts.append(text)
-                                summary = f"PDF '{file_info.filename}' ({len(text.split())} words). "
-                                summary += "Use the 'extract' action to get full text."
-                                file_contexts.append(summary)
-                                # Store in memory for future reference
-                                document_memory[file_info.filename] = {
-                                    "type": "pdf",
-                                    "text": text,
-                                    "size": os.path.getsize(file_path),
-                                    "timestamp": datetime.now().isoformat()
-                                }
+                                doc_summary = update_document_memory(file_info.filename, text, "pdf", os.path.getsize(file_path))
+                                file_contexts.append(f"PDF '{file_info.filename}' summary: {doc_summary[:1000]}")
                         elif file_info.type == "image":
                             text = extract_text_from_image(file_path)
                             if text:
                                 extracted_texts.append(text)
-                                file_contexts.append(f"Image content: {text[:1000]}...")
-                                # Store in memory for future reference
-                                document_memory[file_info.filename] = {
-                                    "type": "image",
-                                    "text": text,
-                                    "size": os.path.getsize(file_path),
-                                    "timestamp": datetime.now().isoformat()
-                                }
+                                doc_summary = update_document_memory(file_info.filename, text, "image", os.path.getsize(file_path))
+                                file_contexts.append(f"Image content: {doc_summary[:1000]}")
                     except Exception as e:
                         print(f"Error processing file: {str(e)}")
                         file_contexts.append(f"Error processing {file_info.type} file")
 
-        
         # Build final message with context
         final_message = chat_request.message
         if file_contexts:
@@ -329,15 +338,20 @@ async def chat(request: Request):
             except Exception as e:
                 print(f"Vector store error: {str(e)}")
 
+        # Get recent conversation history (last 2-3 exchanges)
+        recent_history = get_recent_chat_history(count=3)
+        
         # Prepare messages for LLM
         messages = [
             {
                 "role": "system",
-                "content": "You are an AI assistant.Answer like human and in short answer"
+                "content": "You are an AI assistant. Answer conversationally and concisely. "
+                          "You only have to answer education related.try to answer in short as possible"
+                          
             },
-            *[
+            *[ 
                 {"role": "user" if msg.type == "human" else "assistant", "content": msg.content}
-                for msg in memory.load_memory_variables({})["chat_history"]
+                for msg in recent_history
             ],
             {"role": "user", "content": final_message},
         ]
@@ -346,7 +360,7 @@ async def chat(request: Request):
         completion = client.invoke(messages)
         ai_response = completion.content
         
-        # Update memory (being careful with large content)
+        # Update memory (will automatically summarize if needed)
         memory.save_context(
             {"input": chat_request.message[:1000]},  # Truncate to prevent memory bloat
             {"output": ai_response[:1000]}
@@ -357,7 +371,6 @@ async def chat(request: Request):
     except Exception as e:
         raise HTTPException(500, f"Error processing chat request: {str(e)}")
 
-# Clear memory and files endpoint
 @app.post("/clear-memory")
 async def clear_memory():
     try:
@@ -383,7 +396,6 @@ async def clear_memory():
     except Exception as e:
         raise HTTPException(500, f"Error clearing memory: {str(e)}")
 
-# Get document memory info
 @app.get("/document-memory")
 async def get_document_memory():
     return {
@@ -394,10 +406,23 @@ async def get_document_memory():
                 "type": data["type"],
                 "size": data["size"],
                 "timestamp": data["timestamp"],
-                "text_length": len(data["text"])
+                "text_length": len(data["text"]),
+                "summary_length": len(data.get("summary", ""))
             }
             for filename, data in document_memory.items()
         ]
+    }
+
+@app.get("/conversation-memory")
+async def get_conversation_memory():
+    memory_vars = memory.load_memory_variables({})
+    return {
+        "recent_messages": [
+            {"type": "human" if msg.type == "human" else "ai", "content": msg.content}
+            for msg in get_recent_chat_history(count=3)
+        ],
+        "summary": memory_vars.get("history", ""),
+        "total_messages": len(memory_vars["chat_history"])
     }
 
 # Serve frontend
