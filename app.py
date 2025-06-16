@@ -1,3 +1,4 @@
+from langchain.chains import ConversationalRetrievalChain
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +14,6 @@ import pytesseract
 from PIL import Image
 from datetime import datetime
 import uuid
-# from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from PyPDF2 import PdfReader
@@ -21,7 +21,6 @@ import re
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 import whisper
-# from tiktoken import get_encoding
 import tempfile
 
 # Load environment variables
@@ -36,7 +35,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
 
 whisper_model = whisper.load_model("base")
-# tokenizer = get_encoding("cl100k_base")
+
 # Initialize embeddings
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/embedding-001",
@@ -45,18 +44,40 @@ embeddings = GoogleGenerativeAIEmbeddings(
 
 # Initialize text splitter
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1500,
-    chunk_overlap=200,
-    # length_function=lambda text: len(tokenizer.encode(text)),
+    chunk_size=800,
+    chunk_overlap=100,
     add_start_index=True,
 )
 
-# Initialize vector store
+# Initialize vector store and conversation chain
 vector_store = None
+qa_chain = None
+
 try:
     vector_store = FAISS.load_local(VECTOR_STORE_PATH, embeddings)
+    # Initialize QA chain if vector store exists
+    qa_chain = ConversationalRetrievalChain.from_llm(
+        llm=ChatGroq(
+            model_name="llama3-70b-8192",
+            groq_api_key=os.environ["GROQ_API_KEY"],
+            temperature=0
+        ),
+        retriever=vector_store.as_retriever(),
+        memory=ConversationSummaryBufferMemory(
+            llm=ChatGroq(
+                model_name="llama3-70b-8192",
+                groq_api_key=os.environ["GROQ_API_KEY"],
+                temperature=0
+            ),
+            memory_key="chat_history",
+            output_key='answer',
+            return_messages=True
+        ),
+        return_source_documents=True
+    )
 except:
     vector_store = None
+    qa_chain = None
 
 # Document memory to store last processed text
 document_memory = {}
@@ -77,14 +98,14 @@ app.add_middleware(
 client = ChatGroq(
     model_name="llama3-70b-8192",
     groq_api_key=os.environ["GROQ_API_KEY"],
-    temperature=0.7
+    temperature=0
 )
 
 # Initialize conversation memory with summary capability
 memory = ConversationSummaryBufferMemory(
     llm=client,
     memory_key="chat_history",
-    max_token_limit=2000,  # Will summarize when this limit is reached
+    max_token_limit=2000,
     return_messages=True
 )
 
@@ -165,7 +186,7 @@ def update_document_memory(filename, content, file_type, file_size):
     return summary
 
 def update_vector_store(text, filename):
-    global vector_store
+    global vector_store, qa_chain
     if not text:
         return
     
@@ -178,6 +199,26 @@ def update_vector_store(text, filename):
     # Create new FAISS index or add to existing one
     if vector_store is None:
         vector_store = FAISS.from_documents(chunks, embeddings)
+        # Initialize QA chain
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm=ChatGroq(
+                model_name="llama3-70b-8192",
+                groq_api_key=os.environ["GROQ_API_KEY"],
+                temperature=0
+            ),
+            retriever=vector_store.as_retriever(),
+            memory=ConversationSummaryBufferMemory(
+                llm=ChatGroq(
+                    model_name="llama3-70b-8192",
+                    groq_api_key=os.environ["GROQ_API_KEY"],
+                    temperature=0
+                ),
+                memory_key="chat_history",
+                output_key='answer',
+                return_messages=True
+            ),
+            return_source_documents=True
+        )
     else:
         # Extract page_content and metadata for add_texts
         texts = [doc.page_content for doc in chunks]
@@ -327,17 +368,24 @@ async def chat(request: Request):
         if file_contexts:
             final_message = f"{final_message}\n\nDocument context:\n" + "\n".join(file_contexts)
         
-        # Get relevant context from vector store
-        if vector_store and final_message:
+        # Use ConversationalRetrievalChain if available
+        if qa_chain and vector_store:
             try:
-                docs = vector_store.similarity_search(final_message, k=15)
-                context = "\n".join([f"From {doc.metadata['source']}:\n{doc.page_content[:1000]}" 
-                                   for doc in docs])
-                if context:
-                    final_message = f"Relevant document excerpts:\n{context}\n\nQuestion: {final_message}"
+                result = qa_chain({"question": final_message})
+                ai_response = result["answer"]
+                
+                # Update our main memory with the interaction
+                memory.save_context(
+                    {"input": chat_request.message[:1000]},
+                    {"output": ai_response[:1000]}
+                )
+                
+                return {"response": ai_response}
             except Exception as e:
-                print(f"Vector store error: {str(e)}")
+                print(f"QA chain error: {str(e)}")
+                # Fall through to regular LLM response
 
+        # Fallback to regular LLM response if QA chain isn't available
         # Get recent conversation history (last 2-3 exchanges)
         recent_history = get_recent_chat_history(count=3)
         
@@ -346,8 +394,7 @@ async def chat(request: Request):
             {
                 "role": "system",
                 "content": "You are an AI assistant. Answer conversationally and concisely. "
-                          "You only have to answer education related.try to answer in short as possible"
-                          
+                          "You only have to answer education related. Try to answer in short as possible"
             },
             *[ 
                 {"role": "user" if msg.type == "human" else "assistant", "content": msg.content}
@@ -362,7 +409,7 @@ async def chat(request: Request):
         
         # Update memory (will automatically summarize if needed)
         memory.save_context(
-            {"input": chat_request.message[:1000]},  # Truncate to prevent memory bloat
+            {"input": chat_request.message[:1000]},
             {"output": ai_response[:1000]}
         )
         
@@ -377,9 +424,10 @@ async def clear_memory():
         memory.clear()
         # Clear document memory
         document_memory.clear()
-        # Clear vector store
-        global vector_store
+        # Clear vector store and QA chain
+        global vector_store, qa_chain
         vector_store = None
+        qa_chain = None
         if os.path.exists(VECTOR_STORE_PATH):
             shutil.rmtree(VECTOR_STORE_PATH)
             os.makedirs(VECTOR_STORE_PATH)
